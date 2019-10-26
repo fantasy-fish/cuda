@@ -3,6 +3,7 @@
 #include <time.h>       /* time */
 
 // CUDA RumTime API
+#define TILE_WIDTH 32
 
 void MatrixMultiplyOnHost(float* M, float* N, float* P, int width)
 {
@@ -23,27 +24,39 @@ void MatrixMultiplyOnHost(float* M, float* N, float* P, int width)
 
 }
 
-__global__ void MatirxMultiplyKernel(const float* devM, const float* devN, float* devP, const int width)
+__global__ void MatirxMultiplyKernel(const float* devM, const float* devN, float* devP, const int width, const int tile_width)
 {
-	int tx = threadIdx.x;
-	int ty = threadIdx.y;
+	__shared__ float sM[TILE_WIDTH][TILE_WIDTH];
+	__shared__ float sN[TILE_WIDTH][TILE_WIDTH];
+
+	int bx = blockIdx.x;		int by = blockIdx.y;
+	int tx = threadIdx.x;		int ty = threadIdx.y;
+
+	int col = bx*tile_width+tx;
+	int row = by*tile_width+ty;
 
 	//Initialize accumulator to 0
 	float pValue = 0;
 
 	//Multiply and add
-	for(int k=0; k<width; k++)
+	for(int m=0; m<width/tile_width;m++)
 	{
-		float m = devM[ty*width+k];
-		float n = devN[k*width+tx];
-		pValue += m*n;
-	}
+		sM[ty][tx] = devM[row*width+(m*tile_width+tx)];
+		sN[ty][tx] = devN[col+(m*tile_width+ty)*width];
+		//each time bring one element from devM and devN into shared memory
+		//threads are blocked until all the threads reach this point
+		__syncthreads();
 
+		for(int k=0; k<tile_width; k++)
+			pValue += sM[ty][k]*sN[k][tx];
+		__syncthreads();
+	}
+	
 	//Write value to device memory - each thread has unique index to write to
-	devP[ty*width+tx] = pValue;
+	devP[row*width+col] = pValue;
 }
 
-void MatrixMultiplyOnDevice(const float* hostM, const float* hostN, float* hostP, const int width)
+void MatrixMultiplyOnDevice(const float* hostM, const float* hostN, float* hostP, const int width, const int tile_width)
 {
 	int sizeInBytes = width*width*sizeof(float);
 	float *devM, *devN, *devP;
@@ -60,13 +73,13 @@ void MatrixMultiplyOnDevice(const float* hostM, const float* hostN, float* hostP
 	cudaMemcpy(devN, hostN, sizeInBytes, cudaMemcpyHostToDevice);
 
 	//Setup thread/block execution configuration
-	dim3 threads(width,width); //Each block has (width,width) threads
-	dim3 blocks(1,1); //Launch 1 block
+	dim3 dimBlocks(tile_width,tile_width); //Each block has (width,width) threads
+	dim3 dimGrid(width/tile_width,width/tile_width); //Launch 1 block
 
 
 	//Launch the kernel
 	clock_t begin = clock();
-	MatirxMultiplyKernel<<<blocks,threads>>>(devM,devN,devP,width);
+	MatirxMultiplyKernel<<<dimGrid,dimBlocks>>>(devM,devN,devP,width,tile_width);
 	clock_t end = clock();
 	float elapsed_secs = float(end - begin) / CLOCKS_PER_SEC;
 	printf("Matrix Multiply on Device: %fs\n",elapsed_secs);
@@ -93,7 +106,8 @@ void PrintMatrix(float* M, int width)
 
 int main()
 {
-	int width = 32;
+	int width = 1024;
+	int tile_width = 32;
 	int size = width*width;
 
 	float* M = new float[size];
@@ -119,7 +133,7 @@ int main()
 	//1. Copy M,N matrices to device
 	//2. M*N on device
 	//3. Copy P matrix to host and output
-	MatrixMultiplyOnDevice(M,N,Q,width);
+	MatrixMultiplyOnDevice(M,N,Q,width,tile_width);
 
 	float avg_err = 0;
 	for(int i=0; i<size; i++)
