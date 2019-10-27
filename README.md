@@ -9,4 +9,5 @@ cuda programming exercise
 	* Split the matrix into tiles, with each tile assigned to a block
 	* Each tile can access the shared memory instead of accessing the global memory directly
 	* For a 1024*1024 matrix with the tile size of 32*32, it takes 14.500724s on the host, and 0.000022s on the device
-
+	* Below is a nsight profile screenshot
+	* ![nsight](https://github.com/fantasy-fish/cuda/blob/master/nsight.png)
